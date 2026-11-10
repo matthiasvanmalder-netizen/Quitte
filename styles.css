@@ -341,6 +341,11 @@ input[type=date] { min-width: 0; }
 .qr-details summary { padding: 4px 0; color: var(--focus); font-weight: 600; cursor: pointer; }
 .qr { display: grid; place-items: center; padding: 12px 0; }
 .qr-svg { width: min(240px, 70vw); height: auto; border-radius: 12px; }
+.qr-tap { width: 100%; border: 0; background: none; -webkit-tap-highlight-color: transparent; }
+.qr-tap .qr-svg { transition: transform .12s; }
+.qr-tap:active .qr-svg { transform: scale(.97); }
+.qr-tap:focus-visible { outline: none; }
+.qr-tap:focus-visible .qr-svg { outline: 3px solid var(--focus); outline-offset: 4px; }
 
 /* ---------- paneel ---------- */
 

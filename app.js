@@ -76,15 +76,47 @@ function netLine(net, c) {
   return 'Je staat quitte';
 }
 
-function qrSvg(text) {
-  if (typeof qrcode !== 'function') return '';
+function qrCode(text) {
+  if (typeof qrcode !== 'function') return null;
   const qr = qrcode(0, 'M');
   qr.addData(String.fromCharCode(...new TextEncoder().encode(text)));
   qr.make();
+  return qr;
+}
+
+function qrSvg(text) {
+  const qr = qrCode(text);
+  if (!qr) return '';
   const n = qr.getModuleCount();
   let d = '';
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`;
   return `<svg class="qr-svg" viewBox="-3 -3 ${n + 6} ${n + 6}" role="img" aria-label="QR-code" shape-rendering="crispEdges"><rect x="-3" y="-3" width="${n + 6}" height="${n + 6}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+}
+
+// De QR als PNG-bestand, met een regel tekst eronder zodat je hem later in je foto's herkent.
+// Synchroon gebouwd: iOS opent het deelmenu alleen rechtstreeks vanuit de tik.
+function qrFile(text, caption) {
+  const qr = qrCode(text);
+  if (!qr) return null;
+  const n = qr.getModuleCount(), s = 12, pad = 4 * s, size = n * s + 2 * pad;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size + 44;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#000';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) g.fillRect(pad + c * s, pad + r * s, s, s);
+  g.font = '600 26px "Schibsted Grotesk", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillText(caption, size / 2, size + 10, size - 2 * pad);
+  const bin = atob(cv.toDataURL('image/png').split(',')[1]);
+  return new File([Uint8Array.from(bin, ch => ch.charCodeAt(0))], 'betaling.png', { type: 'image/png' });
+}
+
+// Alleen op touchtoestellen: daar scan je de code niet, je betaalt op hetzelfde scherm.
+function canShareQr() {
+  try {
+    return matchMedia('(pointer: coarse)').matches && !!navigator.canShare?.({ files: [new File([''], 'x.png', { type: 'image/png' })] });
+  } catch { return false; }
 }
 
 // ---------- melding onderaan ----------
@@ -863,24 +895,35 @@ function settleNow(from, to, minor) {
   });
 }
 
-function shPay() {
-  const st = S.sheet, c = cur(), to = member(st.to), me = myId();
-  if (!to) return `${sheetHead('Betalen')}<div class="sheet-body"><p>Deze persoon bestaat niet meer.</p></div>`;
+function payInfo(st) {
+  const to = member(st.to);
+  if (!to) return null;
   const holder = to.holder || to.name, text = `Quitte ${S.group.name}`.slice(0, 140);
+  const epc = cur() === 'EUR' ? M.epcPayload({ name: holder, iban: to.iban, minor: st.amount, text }) : '';
+  return { to, holder, text, epc };
+}
+
+function shPay() {
+  const st = S.sheet, c = cur(), me = myId(), p = payInfo(st);
+  if (!p) return `${sheetHead('Betalen')}<div class="sheet-body"><p>Deze persoon bestaat niet meer.</p></div>`;
+  const { to, holder, text, epc } = p, tap = epc && canShareQr();
   const amountTxt = M.inputValue(M.fromMinor(st.amount, c), c);
   return `${sheetHead(`Betalen aan ${esc(to.name)}`)}
   <div class="sheet-body pay">
     <p class="pay-amt">${M.fmt(st.amount, c)}</p>
     <p class="pay-sub">${esc(who(st.from))} betaalt ${esc(st.to === me ? 'jou' : to.name)}</p>
-    ${c === 'EUR' ? `<div class="qr">${qrSvg(M.epcPayload({ name: holder, iban: to.iban, minor: st.amount, text }))}</div>
-      <p class="seg-hint center">Scan met je bankapp. Bedrag en mededeling staan er al in.</p>` : ''}
+    ${!epc ? '' : tap ? `<button type="button" class="qr qr-tap" data-act="share-qr" aria-label="Deel of bewaar de betaal-QR">${qrSvg(epc)}</button>
+      <p class="seg-hint center">Tik op de code om hem te delen of te bewaren. Bedrag en mededeling staan er al in.</p>`
+    : `<div class="qr">${qrSvg(epc)}</div>
+      <p class="seg-hint center">Scan met je bankapp. Bedrag en mededeling staan er al in.</p>`}
     <dl class="pay-data">
       <div><dt>Rekeningnummer</dt><dd>${esc(M.prettyIban(to.iban))}</dd>
         <button type="button" class="btn btn-small btn-ghost" data-act="copy" data-copy="${esc(M.normIban(to.iban))}" data-msg="Rekeningnummer gekopieerd">${I.copy}Kopieer</button></div>
       <div><dt>Op naam van</dt><dd>${esc(holder)}</dd></div>
       <div><dt>Bedrag</dt><dd>${M.fmt(st.amount, c)}</dd>
         <button type="button" class="btn btn-small btn-ghost" data-act="copy" data-copy="${esc(amountTxt)}" data-msg="Bedrag gekopieerd">${I.copy}Kopieer</button></div>
-      <div><dt>Mededeling</dt><dd>${esc(text)}</dd></div>
+      <div><dt>Mededeling</dt><dd>${esc(text)}</dd>
+        <button type="button" class="btn btn-small btn-ghost" data-act="copy" data-copy="${esc(text)}" data-msg="Mededeling gekopieerd">${I.copy}Kopieer</button></div>
     </dl>
     <button type="button" class="btn btn-sun btn-wide" data-act="settle" data-from="${st.from}" data-to="${st.to}" data-amount="${st.amount}">${st.from === me ? 'Ik heb betaald' : 'Markeer als betaald'}</button>
   </div>`;
@@ -1099,6 +1142,11 @@ const ACT = {
   'save-group': saveGroup,
   'share-link': async () => {
     try { await navigator.share({ title: `Quitte: ${S.group.name}`, text: `Doe mee met "${S.group.name}" op Quitte en tik je naam aan.`, url: groupUrl() }); } catch {}
+  },
+  // Alleen het bestand delen: met tekst erbij verdwijnt op iOS 'Bewaar afbeelding' uit het menu.
+  'share-qr': () => {
+    const p = payInfo(S.sheet), file = p?.epc && qrFile(p.epc, `${M.fmt(S.sheet.amount, cur())} aan ${p.holder}`);
+    if (file) navigator.share({ files: [file] }).catch(() => {});
   },
   copy: el => copy(el.dataset.copy, el.dataset.msg),
   restore: el => { const e = S.log.find(x => x.id === el.dataset.id); if (e?.snapshot) restoreEntry(e.ref, e.snapshot); },
