@@ -1,15 +1,16 @@
 // Opslag. Met een Firebase-config in config.js delen alle toestellen dezelfde gegevens;
 // zonder config draait de app in demo-modus en blijft alles in deze browser.
 //
-// Een regeling is groups/{gid} met drie subcollecties: members, expenses en log.
+// Een regeling is groups/{gid} met vier subcollecties: members, expenses, log en photos.
 // Schrijven gebeurt altijd via commit(gid, ops), met ops als
-//   { col: 'members' | 'expenses' | 'log' | null, id, op: 'set' | 'merge' | 'delete', data }
+//   { col: 'members' | 'expenses' | 'log' | 'photos' | null, id, op: 'set' | 'merge' | 'delete', data }
 // (col null = het regelingsdocument zelf), zodat een wijziging en de logregel samen worden opgeslagen.
+// Foto's worden niet gevolgd zoals de rest: getPhoto haalt er één op wanneer je ze bekijkt.
 
 import { firebaseConfig } from './config.js';
 
 const FB = 'https://www.gstatic.com/firebasejs/10.14.1/';
-const SUBS = ['members', 'expenses', 'log'];
+const SUBS = ['members', 'expenses', 'log', 'photos'];
 
 export async function openStore() {
   return firebaseConfig?.apiKey ? firebaseStore(firebaseConfig) : localStore();
@@ -36,6 +37,10 @@ async function firebaseStore(cfg) {
     async getGroup(gid) {
       const s = await F.getDoc(ref(gid));
       return s.exists() ? { id: gid, ...s.data() } : null;
+    },
+    async getPhoto(gid, id) {
+      const s = await F.getDoc(ref(gid, 'photos', id));
+      return s.exists() ? s.data() : null;
     },
     watch(gid, h) {
       const col = name => F.collection(db, 'groups', gid, name);
@@ -90,6 +95,7 @@ function localStore() {
     uid,
     newId: rid,
     async getGroup(gid) { return data[gid] ? { id: gid, ...data[gid].doc } : null; },
+    async getPhoto(gid, id) { return load()[gid]?.photos?.[id] || null; },
     watch(gid, h) {
       if (!watchers.has(gid)) watchers.set(gid, new Set());
       watchers.get(gid).add(h);
@@ -101,7 +107,7 @@ function localStore() {
       const g = (data[gid] ??= { doc: null, members: {}, expenses: {}, log: {} });
       for (const o of ops) {
         if (o.col && !SUBS.includes(o.col)) throw new Error('onbekende collectie');
-        const bag = o.col ? g[o.col] : null;
+        const bag = o.col ? (g[o.col] ??= {}) : null;
         const cur = o.col ? bag[o.id] : g.doc;
         const next = o.op === 'delete' ? undefined : o.op === 'merge' ? { ...cur, ...o.data } : { ...o.data };
         if (o.col) { if (next) bag[o.id] = next; else delete bag[o.id]; }

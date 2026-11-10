@@ -17,6 +17,8 @@ const I = {
   share: svg('<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 13v6h14v-6"/>'),
   copy: svg('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>'),
   swap: svg('<path d="M5 8h13l-3-3M19 16H6l3 3"/>'),
+  camera: svg('<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
+  image: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-8 8"/>'),
 };
 const LOGO = '<svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="var(--logo-bg)"/><rect x="8" y="11" width="16" height="3.6" rx="1.8" fill="#FFC93C"/><rect x="8" y="17.4" width="16" height="3.6" rx="1.8" fill="#FFC93C"/></svg>';
 
@@ -108,9 +110,10 @@ function qrFile(text, caption) {
   g.font = '600 26px "Schibsted Grotesk", system-ui, sans-serif';
   g.textAlign = 'center';
   g.fillText(caption, size / 2, size + 10, size - 2 * pad);
-  const bin = atob(cv.toDataURL('image/png').split(',')[1]);
-  return new File([Uint8Array.from(bin, ch => ch.charCodeAt(0))], 'betaling.png', { type: 'image/png' });
+  return new File([dataBytes(cv.toDataURL('image/png'))], 'betaling.png', { type: 'image/png' });
 }
+
+const dataBytes = url => Uint8Array.from(atob(url.slice(url.indexOf(',') + 1)), ch => ch.charCodeAt(0));
 
 // Alleen op touchtoestellen: daar scan je de code niet, je betaalt op hetzelfde scherm.
 function canShareQr() {
@@ -170,6 +173,7 @@ function parseRoute() {
 
 function onRoute() {
   const r = parseRoute(), prevView = S.view;
+  dropViewer();
   if (S.sheet) dropSheet();
   S.view = r.view;
   if (r.tab) { S.animBal = r.tab === 'saldo' && S.tab !== 'saldo'; S.tab = r.tab; }
@@ -419,7 +423,8 @@ function expRow(e, c, me) {
   const foreign = e.currency !== c ? ` ${M.fmtAmount(e.amount, e.currency)}` : '';
   return `<li><button type="button" class="exp-row" data-act="edit-expense" data-id="${e.id}">
     ${avatar(e.paidBy)}
-    <span class="exp-main"><b>${esc(e.title)}</b><small>${esc(e.paidBy === me ? 'Jij betaalde' : nameOf(e.paidBy) + ' betaalde')}${foreign}</small></span>
+    <span class="exp-main"><span class="exp-title"><b>${esc(e.title)}</b>${e.photos?.length ? `${I.image}<span class="vh">, met foto</span>` : ''}</span>
+      <small>${esc(e.paidBy === me ? 'Jij betaalde' : nameOf(e.paidBy) + ' betaalde')}${foreign}</small></span>
     <span class="exp-amt"><b>${M.fmt(T, c)}</b><small>${part ? 'jouw deel ' + M.fmt(part, c) : 'niet voor jou'}</small></span></button></li>`;
 }
 
@@ -600,6 +605,7 @@ function startExpense(e) {
     currency: e?.currency || mine()[S.gid]?.lastCur || c, date: e?.date || M.todayStr(), paidBy: e?.paidBy || myId(),
     mode: e?.mode || 'equal', inc: new Set(ids), exact: {}, shares: {}, pct: {},
     rate: e?.rate || 1, rateDate: e?.rateDate || null, rateSource: e?.rateSource || 'ecb', rateState: 'idle', rateStr: '',
+    photos: (e?.photos || []).map(id => ({ id })), photoBusy: 0,
   };
   if (!M.CURRENCIES.includes(st.currency)) st.currency = c;
   ids.forEach(id => { st.shares[id] = '1'; });
@@ -612,6 +618,7 @@ function startExpense(e) {
     if (e.rateSource === 'manual') st.rateStr = fmtRate(e.rate);
   }
   openSheet('expense', st);
+  loadPhotos(S.sheet);
   if (!e && st.currency !== c) refreshRate();
 }
 
@@ -642,9 +649,114 @@ function shExpense() {
       <ul class="split">${S.members.map(splitRow).join('')}</ul>
       <p class="split-status" data-out="status"></p>
     </fieldset>
+    <fieldset class="field"><legend>Foto's</legend>
+      <ul class="photos" data-out="photos">${photosHtml()}</ul>
+      <small>Bijvoorbeeld het kasticket. Iedereen met de link van deze regeling kan ze zien.</small></fieldset>
     <p class="form-error" data-out="error" role="alert">${esc(st.error)}</p>
     ${st.id ? deleteBlock('delete-expense', 'Uitgave verwijderen') : ''}
   </div>`;
+}
+
+// ---------- foto's bij een uitgave ----------
+
+// Foto's staan als data-URL in een eigen Firestore-document (geen Firebase Storage nodig, dus gratis).
+// Hier onthouden als id → { data, url } met een blob-URL om te tonen; null = bestaat niet meer.
+const PHOTOS = new Map();
+const PHOTO_MAX = 4;
+
+function cachePhoto(id, data) {
+  PHOTOS.set(id, data ? { data, url: URL.createObjectURL(new Blob([dataBytes(data)], { type: 'image/jpeg' })) } : null);
+}
+
+// Verkleinen tot hoogstens 1600 px en als JPEG bewaren: een Firestore-document mag niet groter zijn dan 1 MB.
+async function shrinkPhoto(file) {
+  const src = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    for (const [max, q] of [[1600, 0.72], [1280, 0.66], [1000, 0.6]]) {
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const g = cv.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+      g.drawImage(img, 0, 0, w, h);
+      const data = cv.toDataURL('image/jpeg', q);
+      if (data.length <= 700000) return { data, w, h };
+    }
+    throw new Error('foto blijft te groot');
+  } finally { URL.revokeObjectURL(src); }
+}
+
+async function addPhotos(files) {
+  const st = S.sheet, room = PHOTO_MAX - st.photos.length - st.photoBusy;
+  const list = [...files].slice(0, Math.max(0, room));
+  if (files.length > list.length) toast(`Hoogstens ${PHOTO_MAX} foto's per uitgave`);
+  for (const f of list) {
+    st.photoBusy++;
+    redrawPhotos();
+    try {
+      const p = await shrinkPhoto(f), id = S.store.newId();
+      cachePhoto(id, p.data);
+      st.photos.push({ id, isNew: true, w: p.w, h: p.h });
+    } catch (err) {
+      console.error(err);
+      toast('Deze foto kan Quitte niet openen. Probeer een andere.');
+    }
+    st.photoBusy--;
+    if (S.sheet === st) redrawPhotos();
+  }
+}
+
+function loadPhotos(st) {
+  for (const p of st.photos) {
+    if (PHOTOS.has(p.id)) continue;
+    S.store.getPhoto(S.gid, p.id)
+      .then(d => cachePhoto(p.id, d?.data), err => { console.error(err); p.failed = true; })
+      .then(() => { if (S.sheet === st) redrawPhotos(); });
+  }
+}
+
+function photosHtml() {
+  const st = S.sheet;
+  const tiles = st.photos.map((p, i) => {
+    const ph = PHOTOS.get(p.id);
+    const inner = ph ? `<img src="${ph.url}" alt="">`
+      : `<span>${ph === null ? 'Niet gevonden' : p.failed ? 'Laden mislukt' : 'Laden…'}</span>`;
+    return `<li class="ph">
+      <button type="button" class="ph-open" data-act="ph-view" data-id="${p.id}" aria-label="Foto ${i + 1} bekijken"${ph ? '' : ' disabled'}>${inner}</button>
+      <button type="button" class="ph-del" data-act="ph-del" data-id="${p.id}" aria-label="Foto ${i + 1} verwijderen">${I.close}</button></li>`;
+  }).join('');
+  const busy = '<li class="ph"><span class="ph-busy">Verkleinen…</span></li>'.repeat(st.photoBusy);
+  const add = st.photos.length + st.photoBusy < PHOTO_MAX ? `<li><label class="ph-add">
+    <input type="file" accept="image/*" multiple class="vh" data-ph-add>${I.camera}<span>Foto toevoegen</span></label></li>` : '';
+  return tiles + busy + add;
+}
+
+function redrawPhotos() {
+  const el = $('#sheet [data-out="photos"]');
+  if (el) el.innerHTML = photosHtml();
+}
+
+// Groot bekijken, bovenop het paneel. Terug (of tikken) sluit alleen de foto.
+function openViewer(id) {
+  const ph = PHOTOS.get(id), el = $('#viewer');
+  if (!ph) return;
+  el.innerHTML = `<img src="${ph.url}" alt="Foto bij de uitgave">
+    <button type="button" class="icon-btn viewer-close" aria-label="Foto sluiten">${I.close}</button>`;
+  el.hidden = false;
+  history.pushState({ sheet: 1, viewer: 1 }, '');
+  $('button', el).focus();
+}
+function dropViewer() { const el = $('#viewer'); el.hidden = true; el.innerHTML = ''; }
+function closeViewer() { if (history.state?.viewer) history.back(); else dropViewer(); }
+
+function photoChange(a = [], b = []) {
+  const added = b.filter(id => !a.includes(id)).length, removed = a.filter(id => !b.includes(id)).length;
+  const n = (k, verb) => (k === 1 ? `Foto ${verb}` : `${k} foto's ${verb}`);
+  return added && removed ? "Foto's gewijzigd" : added ? n(added, 'toegevoegd') : removed ? n(removed, 'verwijderd') : '';
 }
 
 function splitRow(m) {
@@ -771,6 +883,8 @@ function diffExpense(a, b) {
   } else if (a.mode !== b.mode || !sameParts(a.parts, b.parts)) {
     ch.push({ label: 'Verdeling', a: splitSummary(a), b: splitSummary(b) });
   }
+  const photos = photoChange(a.photos, b.photos);
+  if (photos) ch.push({ label: photos });
   return ch;
 }
 
@@ -780,7 +894,8 @@ function saveExpense() {
     : !title ? 'Vul een omschrijving in.'
     : !member(st.paidBy) ? 'Kies wie betaalde.'
     : foreign && !(st.rate > 0) ? 'Vul een geldige wisselkoers in.'
-    : !r.valid ? r.status || 'De verdeling klopt nog niet.' : '';
+    : !r.valid ? r.status || 'De verdeling klopt nog niet.'
+    : st.photoBusy ? 'Even wachten: de foto wordt nog verkleind.' : '';
   if (err) return showSheetError(err);
   const nums = (obj, parse = M.parseNumber) => Object.fromEntries(Object.entries(obj).map(([id, v]) => [id, parse(v)]).filter(([, n]) => n > 0));
   const parts = st.mode === 'equal' ? Object.fromEntries([...st.inc].map(id => [id, 1]))
@@ -791,9 +906,15 @@ function saveExpense() {
     rate: foreign ? st.rate : 1, rateDate: foreign && st.rateSource === 'ecb' ? st.rateDate : null,
     rateSource: foreign ? st.rateSource : 'same',
     paidBy: st.paidBy, mode: st.mode, parts, date: st.date || M.todayStr(),
+    photos: st.photos.length ? st.photos.map(p => p.id) : undefined,
     createdAt: st.orig?.createdAt || now, createdBy: st.orig?.createdBy || me, updatedAt: now, updatedBy: me,
   };
-  const ops = [{ col: 'expenses', id, op: 'set', data }];
+  // Verwijderde foto's gaan echt weg. Bij een verwijderde uitgave blijven ze, zodat Ongedaan maken ze terugbrengt.
+  const ops = [
+    ...st.photos.filter(p => p.isNew).map(p => ({ col: 'photos', id: p.id, op: 'set', data: { data: PHOTOS.get(p.id).data, w: p.w, h: p.h, at: now, by: me } })),
+    ...(st.orig?.photos || []).filter(pid => !data.photos?.includes(pid)).map(pid => ({ col: 'photos', id: pid, op: 'delete' })),
+    { col: 'expenses', id, op: 'set', data },
+  ];
   if (st.orig) {
     const changes = diffExpense(st.orig, data);
     if (!changes.length) return closeSheet();
@@ -1126,6 +1247,9 @@ const ACT = {
   'ex-rate-manual': () => { const st = S.sheet; st.rateSource = 'manual'; st.rateStr = fmtRate(st.rate); redrawRate(); updateEditor(); $('#ex-rate')?.focus(); },
   'ex-rate-auto': () => { S.sheet.rateSource = 'ecb'; refreshRate(); },
   'save-expense': saveExpense,
+  'ph-view': el => openViewer(el.dataset.id),
+  'ph-del': el => { const st = S.sheet; st.photos = st.photos.filter(p => p.id !== el.dataset.id); redrawPhotos(); },
+  'viewer-close': () => closeViewer(),
   'delete-expense': deleteEntry,
   'cancel-delete': () => { S.sheet.confirmDelete = false; renderSheet(); },
   'tr-from': el => { S.sheet.from = el.dataset.id; renderSheet(); },
@@ -1189,7 +1313,8 @@ document.addEventListener('input', ev => {
 document.addEventListener('change', ev => {
   const el = ev.target, d = el.dataset, st = S.sheet;
   if (!st) return;
-  if (d.exInc) { if (el.checked) st.inc.add(d.exInc); else st.inc.delete(d.exInc); updateEditor(); }
+  if ('phAdd' in d) { const files = [...el.files]; el.value = ''; if (files.length) addPhotos(files); }
+  else if (d.exInc) { if (el.checked) st.inc.add(d.exInc); else st.inc.delete(d.exInc); updateEditor(); }
   else if (d.ex === 'currency') {
     st.currency = el.value;
     Object.assign(st, el.value === cur() ? { rate: 1, rateSource: 'same' } : { rateSource: 'ecb', rateStr: '', rate: 1 });
@@ -1199,8 +1324,14 @@ document.addEventListener('change', ev => {
   else if (d.f === 'currency') st.currency = el.value;
 });
 
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && S.sheet) closeSheet(); });
-window.addEventListener('popstate', () => { if (S.sheet && !history.state?.sheet) dropSheet(); });
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape') return;
+  if (!$('#viewer').hidden) closeViewer(); else if (S.sheet) closeSheet();
+});
+window.addEventListener('popstate', () => {
+  if (!history.state?.viewer && !$('#viewer').hidden) dropViewer();
+  if (S.sheet && !history.state?.sheet) dropSheet();
+});
 
 // ---------- start ----------
 

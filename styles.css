@@ -267,6 +267,9 @@ input[type=date] { min-width: 0; }
   border-radius: 50%; background: var(--sunken); color: var(--ink-2);
 }
 .set-row > .i { color: var(--ink-3); }
+.exp-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.exp-title b { min-width: 0; }
+.exp-title .i { width: 16px; height: 16px; color: var(--ink-3); }
 
 .empty { padding: 40px 12px; text-align: center; color: var(--ink-2); }
 .empty p { max-width: 34ch; margin-inline: auto; }
@@ -441,6 +444,36 @@ input[type=date] { min-width: 0; }
 .pct span { color: var(--ink-2); font-weight: 600; }
 .split-status { min-height: 1.4em; font-size: 14.5px; font-weight: 600; color: var(--ink-2); }
 .split-status.warn { color: var(--minus); }
+
+.photos { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; }
+.ph { position: relative; }
+.ph-open, .ph-busy, .ph-add {
+  width: 80px; height: 80px; display: grid; place-items: center; overflow: hidden;
+  border-radius: 14px; background: var(--sunken);
+}
+.ph-open { padding: 0; border: 0; }
+.ph-open img { width: 100%; height: 100%; object-fit: cover; }
+.ph-open span, .ph-busy { padding: 6px; font-size: 13px; line-height: 1.25; text-align: center; color: var(--ink-3); }
+.ph-del {
+  position: absolute; top: -8px; right: -8px; width: 30px; height: 30px;
+  display: grid; place-items: center; padding: 0;
+  border: 2px solid var(--paper); border-radius: 50%; background: var(--ink); color: var(--paper);
+}
+.ph-del .i { width: 14px; height: 14px; stroke-width: 2.8; }
+.ph-add { align-content: center; gap: 4px; padding: 6px; cursor: pointer; color: var(--ink-2); font-size: 13px; font-weight: 600; line-height: 1.2; text-align: center; }
+.ph-add:hover { background: color-mix(in srgb, var(--sunken) 75%, var(--ink-3)); }
+.ph-add:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+#viewer {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; place-items: center;
+  padding: calc(56px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
+  background: rgb(4 5 14 / .94);
+}
+#viewer img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+.viewer-close { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 10px; color: #fff; }
+.viewer-close:hover { background: rgb(255 255 255 / .14); }
 
 .danger { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }
 .danger p { font-size: 14.5px; color: var(--ink-2); }
